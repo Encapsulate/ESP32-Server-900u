@@ -88,7 +88,7 @@ int WEB_PORT = 80;
 int USB_WAIT = 10000;
 
 // Displayed firmware version
-String firmwareVer = "1.02-field-console";
+String firmwareVer = "1.03-full-console";
 
 //ESP sleep after x minutes
 boolean espSleep = false;
@@ -243,6 +243,35 @@ void handleApiStatus(AsyncWebServerRequest *request) {
   output += "\"sketchFree\":" + String(ESP.getFreeSketchSpace() - ESP.getSketchSize());
   output += "}";
   request->send(200, "application/json", output);
+}
+
+String consolePageStart(String title, String lead) {
+  String page(FPSTR(CONSOLE_PAGE_HEAD));
+  page.replace("%TITLE%", title);
+  page += "<div class=\"eyebrow\">ESP32 / LOCAL CONTROL</div><h1 class=\"title\">" + title + "</h1><div class=\"lead\">" + lead + "</div><section class=\"panel\">";
+  return page;
+}
+
+String consolePageEnd() {
+  return "</section>" + String(FPSTR(CONSOLE_PAGE_FOOT));
+}
+
+void handleUploadHtml(AsyncWebServerRequest *request) {
+  String page = consolePageStart("File upload", "Transfer a local file to ESP storage. Existing files with the same name are replaced.");
+  page += "<form action=\"/upload.html\" method=\"post\" enctype=\"multipart/form-data\"><label class=\"field\">Select file<input type=\"file\" name=\"upload\" required></label><p class=\"note\">Configuration is protected: config.ini cannot be uploaded here.</p><button class=\"btn\" type=\"submit\">Upload to storage</button></form>";
+  request->send(200, "text/html", page + consolePageEnd());
+}
+
+void handleUpdateHtml(AsyncWebServerRequest *request) {
+  String page = consolePageStart("Firmware update", "Install a compiled OTA firmware image without a serial cable.");
+  page += "<form action=\"/update.html\" method=\"post\" enctype=\"multipart/form-data\"><label class=\"field\">Firmware image<input type=\"file\" name=\"update\" accept=\".bin\" required></label><p class=\"note\">The update handler requires the uploaded file to be named <b>fwupdate.bin</b>. Keep power connected until it reboots.</p><button class=\"btn\" type=\"submit\">Install firmware</button></form>";
+  request->send(200, "text/html", page + consolePageEnd());
+}
+
+void handleRebootHtml(AsyncWebServerRequest *request) {
+  String page = consolePageStart("Restart device", "Restart the ESP32 server. The access point and local web service will be briefly unavailable.");
+  page += "<form action=\"/reboot.html\" method=\"post\"><p class=\"note\">Use this after changing configuration or recovering a temporary Wi-Fi connection issue.</p><button class=\"btn danger\" type=\"submit\">Restart ESP32</button></form>";
+  request->send(200, "text/html", page + consolePageEnd());
 }
 
 
@@ -495,6 +524,12 @@ void handleConfig(AsyncWebServerRequest *request) {
       iniFile.print("\r\nAP_SSID=" + AP_SSID + "\r\nAP_PASS=" + AP_PASS + "\r\nWEBSERVER_IP=" + tmpip + "\r\nWEBSERVER_PORT=" + tmpwport + "\r\nSUBNET_MASK=" + tmpsubn + "\r\nWIFI_SSID=" + WIFI_SSID + "\r\nWIFI_PASS=" + WIFI_PASS + "\r\nWIFI_HOST=" + WIFI_HOSTNAME + "\r\nUSEAP=" + tmpua + "\r\nCONWIFI=" + tmpcw + "\r\nUSBWAIT=" + USB_WAIT + "\r\nESPSLEEP=" + tmpslp + "\r\nSLEEPTIME=" + TIME2SLEEP + "\r\n");
       iniFile.close();
     }
+    String savedPage = consolePageStart("Settings saved", "Your configuration is stored. The ESP32 is restarting now to apply it.");
+    savedPage += "<p class=\"note\">Reconnect to the PS4 access point after restart, or use the configured secondary LAN address when the Wi-Fi link is online.</p><a class=\"btn\" href=\"/admin.html\">Return to console</a>";
+    request->send(200, "text/html", savedPage + consolePageEnd());
+    delay(1000);
+    ESP.restart();
+    return;
     String htmStr = "<!DOCTYPE html><html><head><meta http-equiv=\"refresh\" content=\"8; url=/info.html\"><style type=\"text/css\">#loader {z-index: 1;width: 50px;height: 50px;margin: 0 0 0 0;border: 6px solid #f3f3f3;border-radius: 50%;border-top: 6px solid #3498db;width: 50px;height: 50px;-webkit-animation: spin 2s linear infinite;animation: spin 2s linear infinite; } @-webkit-keyframes spin {0%{-webkit-transform: rotate(0deg);}100%{-webkit-transform: rotate(360deg);}}@keyframes spin{0%{ transform: rotate(0deg);}100%{transform: rotate(360deg);}}body {background-color: #1451AE; color: #ffffff; font-size: 20px; font-weight: bold; margin: 0 0 0 0.0; padding: 0.4em 0.4em 0.4em 0.6em;} #msgfmt {font-size: 16px; font-weight: normal;}#status {font-size: 16px; font-weight: normal;}</style></head><center><br><br><br><br><br><p id=\"status\"><div id='loader'></div><br>Config saved<br>Rebooting</p></center></html>";
     request->send(200, "text/html", htmStr);
     delay(1000);
@@ -508,9 +543,9 @@ void handleConfig(AsyncWebServerRequest *request) {
 
 void handleReboot(AsyncWebServerRequest *request) {
   //USBSerial.print("Rebooting ESP");
-  AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", rebooting_gz, sizeof(rebooting_gz));
-  response->addHeader("Content-Encoding", "gzip");
-  request->send(response);
+  String page = consolePageStart("Restarting", "The ESP32 is restarting now. Reconnect in a few seconds.");
+  page += "<p class=\"note\">The PS4 access point and secondary Wi-Fi connection return automatically according to saved settings.</p>";
+  request->send(200, "text/html", page + consolePageEnd());
   delay(1000);
   ESP.restart();
 }
@@ -524,6 +559,11 @@ void handleConfigHtml(AsyncWebServerRequest *request) {
   if (startAP) { tmpUa = "checked"; }
   if (connectWifi) { tmpCw = "checked"; }
   if (espSleep) { tmpSlp = "checked"; }
+
+  String page = consolePageStart("Configuration", "Changes are saved to device storage and applied after the automatic restart.");
+  page += "<form action=\"/config.html\" method=\"post\"><div class=\"section\">Access point</div><div class=\"grid\"><label class=\"field\">AP name<input name=\"ap_ssid\" value=\"" + AP_SSID + "\" required></label><label class=\"field\">AP password<input type=\"password\" name=\"ap_pass\" value=\"********\"></label><label class=\"field\">AP address<input name=\"web_ip\" value=\"" + Server_IP.toString() + "\" required></label><label class=\"field\">Subnet mask<input name=\"subnet\" value=\"" + Subnet_Mask.toString() + "\" required></label></div><p class=\"check\"><input type=\"checkbox\" name=\"useap\" " + tmpUa + "> Keep PS4 access point online</p><div class=\"section\">Secondary Wi-Fi</div><div class=\"grid\"><label class=\"field\">Network name<input name=\"wifi_ssid\" value=\"" + WIFI_SSID + "\"></label><label class=\"field\">Network password<input type=\"password\" name=\"wifi_pass\" value=\"********\"></label><label class=\"field\">Hostname<input name=\"wifi_host\" value=\"" + WIFI_HOSTNAME + "\"></label><label class=\"field\">Web port<input type=\"number\" name=\"web_port\" value=\"" + String(WEB_PORT) + "\" required></label></div><p class=\"note\">Secondary Wi-Fi uses static LAN address " + WIFI_STATIC_IP.toString() + ". This does not change the PS4 AP address.</p><p class=\"check\"><input type=\"checkbox\" name=\"usewifi\" " + tmpCw + "> Connect to secondary Wi-Fi</p><div class=\"section\">Device behavior</div><div class=\"grid\"><label class=\"field\">USB wait (milliseconds)<input type=\"number\" name=\"usbwait\" value=\"" + String(USB_WAIT) + "\" required></label><label class=\"field\">Sleep after (minutes)<input type=\"number\" name=\"sleeptime\" value=\"" + String(TIME2SLEEP) + "\" required></label></div><p class=\"check\"><input type=\"checkbox\" name=\"espsleep\" " + tmpSlp + "> Enable sleep mode</p><button class=\"btn\" type=\"submit\">Save and restart</button></form>";
+  request->send(200, "text/html", page + consolePageEnd());
+  return;
 
   String htmStr = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Config Editor</title><style type=\"text/css\">body {background-color: #1451AE; color: #ffffff; font-size: 14px;font-weight: bold;margin: 0 0 0 0.0;padding: 0.4em 0.4em 0.4em 0.6em;}input[type=\"submit\"]:hover {background: #ffffff;color: green;}input[type=\"submit\"]:active{outline-color: green;color: green;background: #ffffff; }table {font-family: arial, sans-serif;border-collapse: collapse;}td {border: 1px solid #dddddd;text-align: left;padding: 8px;}th {border: 1px solid #dddddd; background-color:gray;text-align: center;padding: 8px;}</style></head><body><form action=\"/config.html\" method=\"post\"><center><table><tr><th colspan=\"2\"><center>Access Point</center></th></tr><tr><td>AP SSID:</td><td><input name=\"ap_ssid\" value=\"" + AP_SSID + "\"></td></tr><tr><td>AP PASSWORD:</td><td><input name=\"ap_pass\" value=\"********\"></td></tr><tr><td>AP IP:</td><td><input name=\"web_ip\" value=\"" + Server_IP.toString() + "\"></td></tr><tr><td>SUBNET MASK:</td><td><input name=\"subnet\" value=\"" + Subnet_Mask.toString() + "\"></td></tr><tr><td>START AP:</td><td><input type=\"checkbox\" name=\"useap\" " + tmpUa + "></td></tr><tr><th colspan=\"2\"><center>Web Server</center></th></tr><tr><td>WEBSERVER PORT:</td><td><input name=\"web_port\" value=\"" + String(WEB_PORT) + "\"></td></tr><tr><th colspan=\"2\"><center>Wifi Connection</center></th></tr><tr><td>WIFI SSID:</td><td><input name=\"wifi_ssid\" value=\"" + WIFI_SSID + "\"></td></tr><tr><td>WIFI PASSWORD:</td><td><input name=\"wifi_pass\" value=\"********\"></td></tr><tr><td>WIFI HOSTNAME:</td><td><input name=\"wifi_host\" value=\"" + WIFI_HOSTNAME + "\"></td></tr><tr><td>CONNECT WIFI:</td><td><input type=\"checkbox\" name=\"usewifi\" " + tmpCw + "></td></tr><tr><th colspan=\"2\"><center>Auto USB Wait</center></th></tr><tr><td>WAIT TIME(ms):</td><td><input name=\"usbwait\" value=\"" + USB_WAIT + "\"></td></tr><tr><th colspan=\"2\"><center>ESP Sleep Mode</center></th></tr><tr><td>ENABLE SLEEP:</td><td><input type=\"checkbox\" name=\"espsleep\" " + tmpSlp + "></td></tr><tr><td>TIME TO SLEEP(minutes):</td><td><input name=\"sleeptime\" value=\"" + TIME2SLEEP + "\"></td></tr></table><br><input id=\"savecfg\" type=\"submit\" value=\"Save Config\"></center></form></body></html>";
   request->send(200, "text/html", htmStr);
@@ -620,19 +660,17 @@ void handleInfo(AsyncWebServerRequest *request) {
   FlashMode_t ideMode = ESP.getFlashChipMode();
   String mcuType = CONFIG_IDF_TARGET;
   mcuType.toUpperCase();
-  String output = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>System Information</title><link rel=\"stylesheet\" href=\"style.css\"></head>";
-  output += "<hr>###### Software ######<br><br>";
+  String output = consolePageStart("Diagnostics", "Detailed live hardware, storage, memory, and network information.");
+  output += "<p class=\"note\">For auto-refreshing connection telemetry, use the <a style=\"color:#54e5ff\" href=\"/admin.html\">Field Console</a>.</p><div class=\"section\">Software</div>";
   output += "Firmware version " + firmwareVer + "<br>";
-  output += "SDK version: " + String(ESP.getSdkVersion()) + "<br><hr>";
-  output += "###### Board ######<br><br>";
+  output += "SDK version: " + String(ESP.getSdkVersion()) + "<br><div class=\"section\">Board</div>";
   output += "MCU: " + mcuType + "<br>";
 #if defined(USB_PRODUCT)
   output += "Board: " + String(USB_PRODUCT) + "<br>";
 #endif
   output += "Chip Id: " + String(ESP.getChipModel()) + "<br>";
   output += "CPU frequency: " + String(ESP.getCpuFreqMHz()) + "MHz<br>";
-  output += "Cores: " + String(ESP.getChipCores()) + "<br><hr>";
-  output += "###### Flash chip information ######<br><br>";
+  output += "Cores: " + String(ESP.getChipCores()) + "<br><div class=\"section\">Flash chip</div>";
   output += "Flash chip Id: " + String(ESP.getFlashChipMode()) + "<br>";
   output += "Estimated Flash size: " + formatBytes(ESP.getFlashChipSize()) + "<br>";
   output += "Flash frequency: " + String(flashFreq) + " MHz<br>";
@@ -640,8 +678,7 @@ void handleInfo(AsyncWebServerRequest *request) {
                                                                      : ideMode == FM_DIO  ? "DIO"
                                                                      : ideMode == FM_DOUT ? "DOUT"
                                                                                           : "UNKNOWN"))
-            + "<br><hr>";
-  output += "###### Storage information ######<br><br>";
+            + "<br><div class=\"section\">Storage</div>";
 #if USESD || USELILYSD
   output += "Storage Device: SD<br>";
 #elif USEFAT
@@ -653,8 +690,7 @@ void handleInfo(AsyncWebServerRequest *request) {
 #endif
   output += "Total Size: " + formatBytes(FILESYS.totalBytes()) + "<br>";
   output += "Used Space: " + formatBytes(FILESYS.usedBytes()) + "<br>";
-  output += "Free Space: " + formatBytes(FILESYS.totalBytes() - FILESYS.usedBytes()) + "<br><hr>";
-  output += "###### Secondary WiFi ######<br><br>";
+  output += "Free Space: " + formatBytes(FILESYS.totalBytes() - FILESYS.usedBytes()) + "<br><div class=\"section\">Secondary Wi-Fi</div>";
   output += "Enabled: " + String(connectWifi ? "Yes" : "No") + "<br>";
   output += "SSID: " + WIFI_SSID + "<br>";
   output += "Status: " + String(!connectWifi ? "Disabled" : (WiFi.status() == WL_CONNECTED ? "Connected" : "Connecting / retrying")) + "<br>";
@@ -662,24 +698,23 @@ void handleInfo(AsyncWebServerRequest *request) {
     output += "IP address: " + WiFi.localIP().toString() + "<br>";
     output += "Signal: " + String(WiFi.RSSI()) + " dBm<br>";
   }
-  output += "<hr>";
+  output += "<div class=\"section\">Memory</div>";
 #if defined(CONFIG_IDF_TARGET_ESP32S2) | defined(CONFIG_IDF_TARGET_ESP32S3)
   if (ESP.getPsramSize() > 0) {
-    output += "###### PSRam information ######<br><br>";
+    output += "PSRam information<br>";
     output += "Psram Size: " + formatBytes(ESP.getPsramSize()) + "<br>";
     output += "Free psram: " + formatBytes(ESP.getFreePsram()) + "<br>";
-    output += "Max alloc psram: " + formatBytes(ESP.getMaxAllocPsram()) + "<br><hr>";
+    output += "Max alloc psram: " + formatBytes(ESP.getMaxAllocPsram()) + "<br>";
   }
 #endif
-  output += "###### Ram information ######<br><br>";
+  output += "RAM information<br>";
   output += "Ram size: " + formatBytes(ESP.getHeapSize()) + "<br>";
   output += "Free ram: " + formatBytes(ESP.getFreeHeap()) + "<br>";
-  output += "Max alloc ram: " + formatBytes(ESP.getMaxAllocHeap()) + "<br><hr>";
-  output += "###### Sketch information ######<br><br>";
+  output += "Max alloc ram: " + formatBytes(ESP.getMaxAllocHeap()) + "<br><div class=\"section\">Application</div>";
   output += "Sketch hash: " + ESP.getSketchMD5() + "<br>";
   output += "Sketch size: " + formatBytes(ESP.getSketchSize()) + "<br>";
-  output += "Free space available: " + formatBytes(ESP.getFreeSketchSpace() - ESP.getSketchSize()) + "<br><hr>";
-  output += "</html>";
+  output += "Free space available: " + formatBytes(ESP.getFreeSketchSpace() - ESP.getSketchSize()) + "<br>";
+  output += consolePageEnd();
   request->send(200, "text/html", output);
 }
 
@@ -874,9 +909,7 @@ void setup() {
 #endif
 
   server.on("/upload.html", HTTP_GET, [](AsyncWebServerRequest *request) {
-    AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", upload_gz, sizeof(upload_gz));
-    response->addHeader("Content-Encoding", "gzip");
-    request->send(response);
+    handleUploadHtml(request);
   });
 
   server.on(
@@ -912,9 +945,7 @@ void setup() {
   });
 
   server.on("/reboot.html", HTTP_GET, [](AsyncWebServerRequest *request) {
-    AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", reboot_gz, sizeof(reboot_gz));
-    response->addHeader("Content-Encoding", "gzip");
-    request->send(response);
+    handleRebootHtml(request);
   });
 
   server.on("/reboot.html", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -922,9 +953,7 @@ void setup() {
   });
 
   server.on("/update.html", HTTP_GET, [](AsyncWebServerRequest *request) {
-    AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", update_gz, sizeof(update_gz));
-    response->addHeader("Content-Encoding", "gzip");
-    request->send(response);
+    handleUpdateHtml(request);
   });
 
   server.on(
