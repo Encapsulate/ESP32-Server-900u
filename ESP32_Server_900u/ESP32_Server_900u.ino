@@ -100,6 +100,7 @@ int TIME2SLEEP = 30;  // minutes
 
 #include "Loader.h"
 #include "Pages.h"
+#include "ConsoleUI.h"
 #include "jzip.h"
 
 #if USESD
@@ -212,6 +213,36 @@ void maintainSecondaryWifi() {
     mdnsHost.replace(".local", "");
     wifiMdnsStarted = MDNS.begin(mdnsHost.c_str());
   }
+}
+
+String jsonEscape(String value) {
+  value.replace("\\", "\\\\");
+  value.replace("\"", "\\\"");
+  value.replace("\n", "\\n");
+  value.replace("\r", "\\r");
+  return value;
+}
+
+void handleApiStatus(AsyncWebServerRequest *request) {
+  bool staConnected = connectWifi && WiFi.status() == WL_CONNECTED;
+  String staState = !connectWifi ? "Disabled" : (staConnected ? "Connected" : "Connecting / retrying");
+  String output = "{";
+  output += "\"firmware\":\"" + jsonEscape(firmwareVer) + "\",";
+  output += "\"board\":\"" + jsonEscape(String(ESP.getChipModel())) + "\",";
+  output += "\"apSsid\":\"" + jsonEscape(AP_SSID) + "\",";
+  output += "\"apIp\":\"" + Server_IP.toString() + "\",";
+  output += "\"staEnabled\":" + String(connectWifi ? "true" : "false") + ",";
+  output += "\"staConnected\":" + String(staConnected ? "true" : "false") + ",";
+  output += "\"staState\":\"" + staState + "\",";
+  output += "\"staSsid\":\"" + jsonEscape(WIFI_SSID) + "\",";
+  output += "\"staIp\":\"" + (staConnected ? WiFi.localIP().toString() : (USE_STATIC_WIFI_IP ? WIFI_STATIC_IP.toString() : "Not assigned")) + "\",";
+  output += "\"rssi\":" + String(staConnected ? WiFi.RSSI() : 0) + ",";
+  output += "\"storageTotal\":" + String(FILESYS.totalBytes()) + ",";
+  output += "\"storageUsed\":" + String(FILESYS.usedBytes()) + ",";
+  output += "\"storageFree\":" + String(FILESYS.totalBytes() - FILESYS.usedBytes()) + ",";
+  output += "\"sketchFree\":" + String(ESP.getFreeSketchSpace() - ESP.getSketchSize());
+  output += "}";
+  request->send(200, "application/json", output);
 }
 
 
@@ -626,8 +657,8 @@ void handleInfo(AsyncWebServerRequest *request) {
   output += "###### Secondary WiFi ######<br><br>";
   output += "Enabled: " + String(connectWifi ? "Yes" : "No") + "<br>";
   output += "SSID: " + WIFI_SSID + "<br>";
-  output += "Status: " + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Connecting / retrying") + "<br>";
-  if (WiFi.status() == WL_CONNECTED) {
+  output += "Status: " + String(!connectWifi ? "Disabled" : (WiFi.status() == WL_CONNECTED ? "Connected" : "Connecting / retrying")) + "<br>";
+  if (connectWifi && WiFi.status() == WL_CONNECTED) {
     output += "IP address: " + WiFi.localIP().toString() + "<br>";
     output += "Signal: " + String(WiFi.RSSI()) + " dBm<br>";
   }
@@ -827,6 +858,9 @@ void setup() {
   server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/plain", "Microsoft Connect Test");
   });
+  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    handleApiStatus(request);
+  });
 #if !USBCONTROL && defined(CONFIG_IDF_TARGET_ESP32)
   server.on("/cache.manifest", HTTP_GET, [](AsyncWebServerRequest *request) {
     handleCacheManifest(request);
@@ -870,9 +904,7 @@ void setup() {
 #endif
 
   server.on("/admin.html", HTTP_GET, [](AsyncWebServerRequest *request) {
-    AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", admin_gz, sizeof(admin_gz));
-    response->addHeader("Content-Encoding", "gzip");
-    request->send(response);
+    request->send_P(200, "text/html", DASHBOARD_HTML);
   });
 
   server.on("/reboot.html", HTTP_GET, [](AsyncWebServerRequest *request) {
