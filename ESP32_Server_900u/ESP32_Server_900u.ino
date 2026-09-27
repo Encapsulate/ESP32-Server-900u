@@ -907,6 +907,10 @@ void setup() {
     request->send_P(200, "text/html", DASHBOARD_HTML);
   });
 
+  server.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", DASHBOARD_HTML);
+  });
+
   server.on("/reboot.html", HTTP_GET, [](AsyncWebServerRequest *request) {
     AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", reboot_gz, sizeof(reboot_gz));
     response->addHeader("Content-Encoding", "gzip");
