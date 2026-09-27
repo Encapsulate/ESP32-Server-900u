@@ -74,6 +74,12 @@ boolean connectWifi = false;
 String WIFI_SSID = "Home_WIFI";
 String WIFI_PASS = "password";
 String WIFI_HOSTNAME = "ps4.local";
+// Enable and set these values only for a controlled LAN that reserves the IP.
+const bool USE_STATIC_WIFI_IP = false;
+IPAddress WIFI_STATIC_IP(0, 0, 0, 0);
+IPAddress WIFI_GATEWAY(0, 0, 0, 0);
+IPAddress WIFI_SUBNET(255, 255, 255, 0);
+IPAddress WIFI_DNS(0, 0, 0, 0);
 
 //server port
 int WEB_PORT = 80;
@@ -82,7 +88,7 @@ int WEB_PORT = 80;
 int USB_WAIT = 10000;
 
 // Displayed firmware version
-String firmwareVer = "1.00";
+String firmwareVer = "1.01-wifi-retry";
 
 //ESP sleep after x minutes
 boolean espSleep = false;
@@ -144,6 +150,12 @@ long enTime = 0;
 int ftemp = 70;
 long bootTime = 0;
 File upFile;
+// Keep the console access point alive while repeatedly trying the optional
+// infrastructure Wi-Fi connection. The original firmware made one silent
+// connection attempt during boot and never retried it.
+const unsigned long WIFI_RETRY_INTERVAL = 30000;
+unsigned long wifiLastAttempt = 0;
+bool wifiMdnsStarted = false;
 #if defined(CONFIG_IDF_TARGET_ESP32S2) | defined(CONFIG_IDF_TARGET_ESP32S3)
 USBMSC dev;
 #endif
@@ -169,6 +181,37 @@ bool instr(String str, String search) {
     return false;
   }
   return true;
+}
+
+void beginSecondaryWifi() {
+  if (!connectWifi || WIFI_SSID.length() == 0 || WIFI_PASS.length() == 0) {
+    return;
+  }
+  WiFi.setAutoConnect(true);
+  WiFi.setAutoReconnect(true);
+  WiFi.hostname(WIFI_HOSTNAME);
+  if (USE_STATIC_WIFI_IP) {
+    WiFi.config(WIFI_STATIC_IP, WIFI_GATEWAY, WIFI_SUBNET, WIFI_DNS);
+  }
+  WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
+  wifiLastAttempt = millis();
+}
+
+void maintainSecondaryWifi() {
+  if (!connectWifi || WIFI_SSID.length() == 0 || WIFI_PASS.length() == 0) {
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - wifiLastAttempt >= WIFI_RETRY_INTERVAL) {
+      beginSecondaryWifi();
+    }
+    return;
+  }
+  if (!wifiMdnsStarted) {
+    String mdnsHost = WIFI_HOSTNAME;
+    mdnsHost.replace(".local", "");
+    wifiMdnsStarted = MDNS.begin(mdnsHost.c_str());
+  }
 }
 
 
@@ -406,7 +449,7 @@ void handleConfig(AsyncWebServerRequest *request) {
     String tmpip = request->getParam("web_ip", true)->value();
     String tmpwport = request->getParam("web_port", true)->value();
     String tmpsubn = request->getParam("subnet", true)->value();
-    String WIFI_HOSTNAME = request->getParam("wifi_host", true)->value();
+    WIFI_HOSTNAME = request->getParam("wifi_host", true)->value();
     String tmpua = "false";
     String tmpcw = "false";
     String tmpslp = "false";
@@ -414,8 +457,8 @@ void handleConfig(AsyncWebServerRequest *request) {
     if (request->hasParam("usewifi", true)) { tmpcw = "true"; }
     if (request->hasParam("espsleep", true)) { tmpslp = "true"; }
     if (tmpua.equals("false") && tmpcw.equals("false")) { tmpua = "true"; }
-    int USB_WAIT = request->getParam("usbwait", true)->value().toInt();
-    int TIME2SLEEP = request->getParam("sleeptime", true)->value().toInt();
+    USB_WAIT = request->getParam("usbwait", true)->value().toInt();
+    TIME2SLEEP = request->getParam("sleeptime", true)->value().toInt();
     File iniFile = FILESYS.open("/config.ini", "w");
     if (iniFile) {
       iniFile.print("\r\nAP_SSID=" + AP_SSID + "\r\nAP_PASS=" + AP_PASS + "\r\nWEBSERVER_IP=" + tmpip + "\r\nWEBSERVER_PORT=" + tmpwport + "\r\nSUBNET_MASK=" + tmpsubn + "\r\nWIFI_SSID=" + WIFI_SSID + "\r\nWIFI_PASS=" + WIFI_PASS + "\r\nWIFI_HOST=" + WIFI_HOSTNAME + "\r\nUSEAP=" + tmpua + "\r\nCONWIFI=" + tmpcw + "\r\nUSBWAIT=" + USB_WAIT + "\r\nESPSLEEP=" + tmpslp + "\r\nSLEEPTIME=" + TIME2SLEEP + "\r\n");
@@ -580,6 +623,15 @@ void handleInfo(AsyncWebServerRequest *request) {
   output += "Total Size: " + formatBytes(FILESYS.totalBytes()) + "<br>";
   output += "Used Space: " + formatBytes(FILESYS.usedBytes()) + "<br>";
   output += "Free Space: " + formatBytes(FILESYS.totalBytes() - FILESYS.usedBytes()) + "<br><hr>";
+  output += "###### Secondary WiFi ######<br><br>";
+  output += "Enabled: " + String(connectWifi ? "Yes" : "No") + "<br>";
+  output += "SSID: " + WIFI_SSID + "<br>";
+  output += "Status: " + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Connecting / retrying") + "<br>";
+  if (WiFi.status() == WL_CONNECTED) {
+    output += "IP address: " + WiFi.localIP().toString() + "<br>";
+    output += "Signal: " + String(WiFi.RSSI()) + " dBm<br>";
+  }
+  output += "<hr>";
 #if defined(CONFIG_IDF_TARGET_ESP32S2) | defined(CONFIG_IDF_TARGET_ESP32S3)
   if (ESP.getPsramSize() > 0) {
     output += "###### PSRam information ######<br><br>";
@@ -739,6 +791,18 @@ void setup() {
     //USBSerial.println("Filesystem failed to mount");
   }
 
+  // Explicitly select concurrent AP + station mode. This is required for
+  // reliable operation when the PS4 is attached to the AP and the ESP32 also
+  // joins a home or hotspot network.
+  if (startAP && connectWifi) {
+    WiFi.mode(WIFI_AP_STA);
+  } else if (startAP) {
+    WiFi.mode(WIFI_AP);
+  } else {
+    WiFi.mode(WIFI_STA);
+  }
+  WiFi.setSleep(false);
+
   if (startAP) {
     //USBSerial.println("SSID: " + AP_SSID);
     //USBSerial.println("Password: " + AP_PASS);
@@ -757,34 +821,7 @@ void setup() {
     //USBSerial.println("DNS Server IP: " + Server_IP.toString());
   }
 
-  if (connectWifi && WIFI_SSID.length() > 0 && WIFI_PASS.length() > 0) {
-    WiFi.setAutoConnect(true);
-    WiFi.setAutoReconnect(true);
-    WiFi.hostname(WIFI_HOSTNAME);
-    WiFi.begin(WIFI_SSID.c_str(), WIFI_PASS.c_str());
-    //USBSerial.println("WIFI connecting");
-    if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-      //USBSerial.println("Wifi failed to connect");
-    } else {
-      IPAddress LAN_IP = WiFi.localIP();
-      if (LAN_IP) {
-        //USBSerial.println("Wifi Connected");
-        //USBSerial.println("WEB Server LAN IP: " + LAN_IP.toString());
-        //USBSerial.println("WEB Server Port: " + String(WEB_PORT));
-        //USBSerial.println("WEB Server Hostname: " + WIFI_HOSTNAME);
-        String mdnsHost = WIFI_HOSTNAME;
-        mdnsHost.replace(".local", "");
-        MDNS.begin(mdnsHost.c_str());
-        if (!startAP) {
-          dnsServer.setTTL(30);
-          dnsServer.setErrorReplyCode(DNSReplyCode::ServerFailure);
-          dnsServer.start(53, "*", LAN_IP);
-          //USBSerial.println("DNS server started");
-          //USBSerial.println("DNS Server IP: " + LAN_IP.toString());
-        }
-      }
-    }
-  }
+  beginSecondaryWifi();
 
 
   server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1038,6 +1075,8 @@ void disableUSB() {
 
 
 void loop() {
+  maintainSecondaryWifi();
+
   if (espSleep && !isFormating) {
     if (millis() >= (bootTime + (TIME2SLEEP * 60000))) {
       //USBSerial.print("Esp sleep");
