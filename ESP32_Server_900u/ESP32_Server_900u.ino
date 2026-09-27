@@ -88,7 +88,7 @@ int WEB_PORT = 80;
 int USB_WAIT = 10000;
 
 // Displayed firmware version
-String firmwareVer = "1.01-wifi-retry";
+String firmwareVer = "1.02-field-console";
 
 //ESP sleep after x minutes
 boolean espSleep = false;
